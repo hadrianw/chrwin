@@ -60,6 +60,7 @@ int runpipe() {
 	fd_set rfd, wfd;
 	socklen_t clen = 0;
 	socklen_t slen = 0;
+	int nfds = MAX(client.fd, server.fd) + 1;
 	for(;;) {
 		FD_ZERO(&rfd);
 		FD_ZERO(&wfd);
@@ -70,8 +71,7 @@ int runpipe() {
 		FD_SET(client.fd, &wfd);
 		FD_SET(server.fd, &wfd);
 
-		if(select(MAX(client.fd, server.fd)+1, &rfd,
-		   &wfd, NULL, NULL) < 0)
+		if(select(nfds, &rfd, &wfd, NULL, NULL) < 0)
 			goto out_client;
 		if(FD_ISSET(client.fd, &rfd) && clen == 0) {
 			printf("client -> ");
