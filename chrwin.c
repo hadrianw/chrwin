@@ -15,9 +15,11 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <X11/Xproto.h>
 
-#define UNUSED(X) (void)(X)
+#define LENGTH(X) (sizeof X / sizeof X[0])
 #define MAX(a, b) ((a) < (b) ? (b) : (a))
+#define UNUSED(X) (void)(X)
 
 typedef struct {
 	int fd;
@@ -34,13 +36,15 @@ static Conn client;
 static Conn server = {
 	.addr = {
 		AF_UNIX,
-		"/tmp/.X11-unix/X1"
+		"/tmp/.X11-unix/X0"
 	}
 };
 
-static char buf[BUFSIZ];
+static char buf[BUFSIZ * 8];
 
 static size_t children = 0;
+
+static CARD32 realroot = 0;
 
 void sigchld(int sig) {
 	UNUSED(sig);
@@ -48,6 +52,233 @@ void sigchld(int sig) {
 	if(children) {
 		shutdown(ctrl.fd, SHUT_RDWR);
 	}
+}
+
+static char *reqname[] = {
+	[1] = "X_CreateWindow",
+	[2] = "X_ChangeWindowAttributes",
+	[3] = "X_GetWindowAttributes",
+	[4] = "X_DestroyWindow",
+	[5] = "X_DestroySubwindows",
+	[6] = "X_ChangeSaveSet",
+	[7] = "X_ReparentWindow",
+	[8] = "X_MapWindow",
+	[9] = "X_MapSubwindows",
+	[10] = "X_UnmapWindow",
+	[11] = "X_UnmapSubwindows",
+	[12] = "X_ConfigureWindow",
+	[13] = "X_CirculateWindow",
+	[14] = "X_GetGeometry",
+	[15] = "X_QueryTree",
+	[16] = "X_InternAtom",
+	[17] = "X_GetAtomName",
+	[18] = "X_ChangeProperty",
+	[19] = "X_DeleteProperty",
+	[20] = "X_GetProperty",
+	[21] = "X_ListProperties",
+	[22] = "X_SetSelectionOwner",
+	[23] = "X_GetSelectionOwner",
+	[24] = "X_ConvertSelection",
+	[25] = "X_SendEvent",
+	[26] = "X_GrabPointer",
+	[27] = "X_UngrabPointer",
+	[28] = "X_GrabButton",
+	[29] = "X_UngrabButton",
+	[30] = "X_ChangeActivePointerGrab",
+	[31] = "X_GrabKeyboard",
+	[32] = "X_UngrabKeyboard",
+	[33] = "X_GrabKey",
+	[34] = "X_UngrabKey",
+	[35] = "X_AllowEvents",
+	[36] = "X_GrabServer",
+	[37] = "X_UngrabServer",
+	[38] = "X_QueryPointer",
+	[39] = "X_GetMotionEvents",
+	[40] = "X_TranslateCoords",
+	[41] = "X_WarpPointer",
+	[42] = "X_SetInputFocus",
+	[43] = "X_GetInputFocus",
+	[44] = "X_QueryKeymap",
+	[45] = "X_OpenFont",
+	[46] = "X_CloseFont",
+	[47] = "X_QueryFont",
+	[48] = "X_QueryTextExtents",
+	[49] = "X_ListFonts",
+	[50] = "X_ListFontsWithInfo",
+	[51] = "X_SetFontPath",
+	[52] = "X_GetFontPath",
+	[53] = "X_CreatePixmap",
+	[54] = "X_FreePixmap",
+	[55] = "X_CreateGC",
+	[56] = "X_ChangeGC",
+	[57] = "X_CopyGC",
+	[58] = "X_SetDashes",
+	[59] = "X_SetClipRectangles",
+	[60] = "X_FreeGC",
+	[61] = "X_ClearArea",
+	[62] = "X_CopyArea",
+	[63] = "X_CopyPlane",
+	[64] = "X_PolyPoint",
+	[65] = "X_PolyLine",
+	[66] = "X_PolySegment",
+	[67] = "X_PolyRectangle",
+	[68] = "X_PolyArc",
+	[69] = "X_FillPoly",
+	[70] = "X_PolyFillRectangle",
+	[71] = "X_PolyFillArc",
+	[72] = "X_PutImage",
+	[73] = "X_GetImage",
+	[74] = "X_PolyText8",
+	[75] = "X_PolyText16",
+	[76] = "X_ImageText8",
+	[77] = "X_ImageText16",
+	[78] = "X_CreateColormap",
+	[79] = "X_FreeColormap",
+	[80] = "X_CopyColormapAndFree",
+	[81] = "X_InstallColormap",
+	[82] = "X_UninstallColormap",
+	[83] = "X_ListInstalledColormaps",
+	[84] = "X_AllocColor",
+	[85] = "X_AllocNamedColor",
+	[86] = "X_AllocColorCells",
+	[87] = "X_AllocColorPlanes",
+	[88] = "X_FreeColors",
+	[89] = "X_StoreColors",
+	[90] = "X_StoreNamedColor",
+	[91] = "X_QueryColors",
+	[92] = "X_LookupColor",
+	[93] = "X_CreateCursor",
+	[94] = "X_CreateGlyphCursor",
+	[95] = "X_FreeCursor",
+	[96] = "X_RecolorCursor",
+	[97] = "X_QueryBestSize",
+	[98] = "X_QueryExtension",
+	[99] = "X_ListExtensions",
+	[100] = "X_ChangeKeyboardMapping",
+	[101] = "X_GetKeyboardMapping",
+	[102] = "X_ChangeKeyboardControl",
+	[103] = "X_GetKeyboardControl",
+	[104] = "X_Bell",
+	[105] = "X_ChangePointerControl",
+	[106] = "X_GetPointerControl",
+	[107] = "X_SetScreenSaver",
+	[108] = "X_GetScreenSaver",
+	[109] = "X_ChangeHosts",
+	[110] = "X_ListHosts",
+	[111] = "X_SetAccessControl",
+	[112] = "X_SetCloseDownMode",
+	[113] = "X_KillClient",
+	[114] = "X_RotateProperties",
+	[115] = "X_ForceScreenSaver",
+	[116] = "X_SetPointerMapping",
+	[117] = "X_GetPointerMapping",
+	[118] = "X_SetModifierMapping",
+	[119] = "X_GetModifierMapping",
+	[127] = "X_NoOperation",
+};
+
+static char *rplname[] = {
+	[0] = "X_Error",		/* Error */
+	[1] = "X_Reply",		/* Normal reply */
+	[2] = "KeyPress",
+	[3] = "KeyRelease",
+	[4] = "ButtonPress",
+	[5] = "ButtonRelease",
+	[6] = "MotionNotify",
+	[7] = "EnterNotify",
+	[8] = "LeaveNotify",
+	[9] = "FocusIn",
+	[10] = "FocusOut",
+	[11] = "KeymapNotify",
+	[12] = "Expose",
+	[13] = "GraphicsExpose",
+	[14] = "NoExpose",
+	[15] = "VisibilityNotify",
+	[16] = "CreateNotify",
+	[17] = "DestroyNotify",
+	[18] = "UnmapNotify",
+	[19] = "MapNotify",
+	[20] = "MapRequest",
+	[21] = "ReparentNotify",
+	[22] = "ConfigureNotify",
+	[23] = "ConfigureRequest",
+	[24] = "GravityNotify",
+	[25] = "ResizeRequest",
+	[26] = "CirculateNotify",
+	[27] = "CirculateRequest",
+	[28] = "PropertyNotify",
+	[29] = "SelectionClear",
+	[30] = "SelectionRequest",
+	[31] = "SelectionNotify",
+	[32] = "ColormapNotify",
+	[33] = "ClientMessage",
+	[34] = "MappingNotify",
+	[35] = "GenericEvent",
+};
+
+void request(socklen_t len) {
+	printf("%6d ", len);
+
+	xReq *req = (xReq*)buf;
+	if(req->reqType < LENGTH(reqname) && reqname[req->reqType])
+		fputs(reqname[req->reqType], stdout);
+	else
+		printf("UnknownRequest %d", req->reqType);
+
+	switch(req->reqType) {
+	case X_CreateWindow:
+	{
+		xCreateWindowReq *cwin = (xCreateWindowReq*)buf;
+		if(cwin->parent != realroot)
+			break;
+		//cwin->parent = 0x2c00004;
+		break;
+	}
+	case X_QueryExtension:
+	{
+		xQueryExtensionReq *qext = (xQueryExtensionReq*)buf;
+		printf(" %*s", qext->nbytes, (char*)&qext[1]);
+		break;
+	}
+	default:
+		break;
+	}
+	puts("");
+}
+
+void conn(socklen_t len) {
+	printf("%6d ", len);
+
+	xConnClientPrefix *prefix = (xConnClientPrefix*)buf;
+	char *proto = (char*)&prefix[1];
+	char *str = (char*)&proto[prefix->nbytesAuthProto];
+	printf("ConnClient %*s - %*s\n", prefix->nbytesAuthProto, proto,
+	       prefix->nbytesAuthString, str);
+}
+
+void setup(socklen_t len) {
+	printf("%6d ", len);
+
+	xConnSetupPrefix *prefix = (xConnSetupPrefix*)buf;
+	if(prefix->success != 1) {
+		return;
+	}
+	xConnSetup *setup = (xConnSetup*)&prefix[1];
+	char *vendor = (char*)&setup[1];
+	xWindowRoot *root = (xWindowRoot*)&vendor[setup->nbytesVendor + sz_xPixmapFormat * setup->numFormats];
+	printf("ConnSetup %d %*s 0x%x\n",
+	       setup->release, setup->nbytesVendor, vendor, root->windowId);
+	realroot = root->windowId;
+}
+
+void reply(socklen_t len) {
+	printf("%6d ", len);
+
+	xReply *rpl = (xReply*)buf;
+	if(rpl->generic.type < LENGTH(rplname) && rplname[rpl->generic.type])
+		puts(rplname[rpl->generic.type]);
+	else
+		printf("UnknownReply %d\n", rpl->generic.type);
 }
 
 int runpipe() {
@@ -60,6 +291,19 @@ int runpipe() {
 	fd_set rfd, wfd;
 	socklen_t clen = 0;
 	socklen_t slen = 0;
+
+	clen = read(client.fd, &buf, sizeof(buf));
+	if(clen == 0)
+		goto out_server;
+	conn(clen);
+	clen -= write(server.fd, &buf, clen);
+	if(clen != 0)
+		goto out_server;
+	slen = read(server.fd, &buf, sizeof(buf));
+	if(slen == 0)
+		goto out_server;
+	setup(slen);
+
 	int nfds = MAX(client.fd, server.fd) + 1;
 	for(;;) {
 		FD_ZERO(&rfd);
@@ -74,25 +318,21 @@ int runpipe() {
 		if(select(nfds, &rfd, &wfd, NULL, NULL) < 0)
 			goto out_client;
 		if(FD_ISSET(client.fd, &rfd) && clen == 0) {
-			printf("client -> ");
 			clen = read(client.fd, &buf, sizeof(buf));
-			printf("%8d", clen);
 			if(clen == 0)
 				break;
+			request(clen);
 		}
 		if(FD_ISSET(server.fd, &wfd) && clen > 0) {
-			puts(" -> server");
 			clen -= write(server.fd, &buf, clen);
 		}
 		if(FD_ISSET(server.fd, &rfd) && slen == 0) {
-			printf("server -> ");
 			slen = read(server.fd, &buf, sizeof(buf));
-			printf("%8d", slen);
 			if(slen == 0)
 				break;
+			reply(slen);
 		}
 		if(FD_ISSET(client.fd, &wfd) && slen > 0) {
-			puts(" -> client");
 			slen -= write(client.fd, &buf, slen);
 		}
 	}
@@ -163,7 +403,7 @@ int main(int argc, char *argv[]) {
 out_ctrl:
 	close(ctrl.fd);
 out:
-	puts("\ndone");
+	puts("done");
 	return retval;
 }
 
