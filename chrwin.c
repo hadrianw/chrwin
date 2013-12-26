@@ -19,6 +19,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 
 #define LENGTH(X) (sizeof X / sizeof X[0])
 #define MAX(a, b) ((a) < (b) ? (b) : (a))
+#define PAD(e)    ((4 - ((e) % 4)) % 4)
 #define UNUSED(X) (void)(X)
 
 typedef struct {
@@ -251,21 +252,36 @@ void conn(socklen_t len) {
 
 	xConnClientPrefix *prefix = (xConnClientPrefix*)buf;
 	char *proto = (char*)&prefix[1];
-	char *str = (char*)&proto[prefix->nbytesAuthProto];
-	printf("ConnClient %*s - %*s\n", prefix->nbytesAuthProto, proto,
-	       prefix->nbytesAuthString, str);
+	char *str = (char*)&proto[prefix->nbytesAuthProto +
+	                          PAD(prefix->nbytesAuthProto)];
+	printf("ConnClient %*s - ", prefix->nbytesAuthProto, proto);
+	for(size_t i = 0; i < prefix->nbytesAuthString; i++)
+		printf("%hhx", str[i]);
+	puts("");
 }
 
 void setup(socklen_t len) {
 	printf("%6d ", len);
 
 	xConnSetupPrefix *prefix = (xConnSetupPrefix*)buf;
-	if(prefix->success != 1) {
+	switch(prefix->success) {
+	case 2:
+		puts("authenticate");
+		return;
+	case 1:
+		break;
+	case 0:
+		puts("fail");
+		return;
+	default:
+		puts("unknown fail");
 		return;
 	}
 	xConnSetup *setup = (xConnSetup*)&prefix[1];
 	char *vendor = (char*)&setup[1];
-	xWindowRoot *root = (xWindowRoot*)&vendor[setup->nbytesVendor + sz_xPixmapFormat * setup->numFormats];
+	xWindowRoot *root = (xWindowRoot*)&vendor[setup->nbytesVendor +
+	                                          PAD(setup->nbytesVendor) +
+						  sz_xPixmapFormat * setup->numFormats];
 	printf("ConnSetup %d %*s 0x%x\n",
 	       setup->release, setup->nbytesVendor, vendor, root->windowId);
 	realroot = root->windowId;
