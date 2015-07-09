@@ -1,0 +1,32 @@
+chrwin
+------
+
+Change root window.
+
+chrwin operates as proxy between X11 server and client. On creation of windows by client
+chrwin replaces root window XID with XID supplied by command line argument.
+
+Usage
+-----
+
+Because xauth is not handled and fake display number is hardcoded manual xauth modification is needed:
+xauth add $(xauth list "$DISPLAY" | sed "s/$DISPLAY  /:123  /")
+
+chrwin PARENT_XID [cmd [args]]
+
+Example
+-------
+
+chrwin $(tabbed | head -n 1 &) st
+
+st will be embedded by tabbed. X clients started in st will show up in next tabbed tab.
+
+TODO
+----
+
+- Handle windows created for menus.
+- Do not change CreateWindow request. Send ReparentNotify instead later.
+- Keep only one instance of chrwin running. 
+- Generate X display number.
+- Handle MIT-MAGIC-COOKIE authentication internally.
+- Lots of polish.
