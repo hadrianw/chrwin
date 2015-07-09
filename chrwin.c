@@ -1,6 +1,3 @@
-#!/usr/bin/env ccrun
-# -xc -std=c99 -D_BSD_SOURCE -D_GNU_SOURCE -Wall -Wextra -pedantic -lX11
-
 /*
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 
@@ -10,6 +7,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -22,37 +20,36 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 #define PAD(e)    ((4 - ((e) % 4)) % 4)
 #define UNUSED(X) (void)(X)
 
-typedef struct {
-	int fd;
-	struct sockaddr_un addr;
-} Conn;
-
-static Conn ctrl = {
-	.addr = {
-		AF_UNIX,
-		"/tmp/.X11-unix/X123"
-	}
-};
-static Conn client;
-static Conn server = {
-	.addr = {
-		AF_UNIX,
-		"/tmp/.X11-unix/X0"
-	}
-};
+#define SOCKPATH "/tmp/.X11-unix/X"
 
 static char buf[BUFSIZ * 8];
-
 static size_t children = 0;
 
+static CARD32 parent_xid;
 static CARD32 realroot = 0;
+// TODO: generate display number
+static char fakedisplay[] = ":123";
+static int ctl = -1;
 
 void sigchld(int sig) {
 	UNUSED(sig);
 	children--;
 	if(children) {
-		shutdown(ctrl.fd, SHUT_RDWR);
+		shutdown(ctl, SHUT_RDWR);
 	}
+}
+
+int
+chldwait() {
+	int status;
+	do {
+		status = wait(NULL);
+	} while(status > 0);
+	if(errno != ECHILD) {
+		perror("chrwin: wait failed");
+		return EXIT_FAILURE;
+	}
+	return EXIT_SUCCESS;
 }
 
 static char *reqname[] = {
@@ -232,7 +229,7 @@ void request(socklen_t len) {
 		xCreateWindowReq *cwin = (xCreateWindowReq*)buf;
 		if(cwin->parent != realroot)
 			break;
-		//cwin->parent = 0x2c00004;
+		cwin->parent = parent_xid;
 		break;
 	}
 	case X_QueryExtension:
@@ -283,7 +280,7 @@ void setup(socklen_t len) {
 	                                          PAD(setup->nbytesVendor) +
 						  sz_xPixmapFormat * setup->numFormats];
 	printf("ConnSetup %d %*s 0x%x\n",
-	       setup->release, setup->nbytesVendor, vendor, root->windowId);
+	       (int)setup->release, setup->nbytesVendor, vendor, (unsigned int)root->windowId);
 	realroot = root->windowId;
 }
 
@@ -297,68 +294,126 @@ void reply(socklen_t len) {
 		printf("UnknownReply %d\n", rpl->generic.type);
 }
 
-int runpipe() {
-	int retval = EXIT_FAILURE;
-	socklen_t len = sizeof(server.addr.sun_family) + strlen(server.addr.sun_path);
-	server.fd = socket(server.addr.sun_family, SOCK_STREAM, 0);
-	if(connect(server.fd, (struct sockaddr*)&server.addr, len) < 0)
-		goto out_server;
+int xconn(int c, int s) {
+	socklen_t len;
+	len = read(c, &buf, sizeof(buf));
+	if(len == 0)
+		return -1;
+	conn(len);
+	len -= write(s, &buf, len);
+	if(len != 0)
+		return -1;
+	len = read(s, &buf, sizeof(buf));
+	if(len == 0)
+		return -1;
+	setup(len);
+	len -= write(c, &buf, len);
 
-	fd_set rfd, wfd;
+	return 0;
+}
+
+socklen_t
+set_dpy(struct sockaddr_un *addr, char *dpy) {
+	size_t siz = strlen(addr->sun_path);
+	size_t dpysiz;
+	if(!dpy || dpy[0] != ':' ||
+	   siz + (dpysiz = strlen(++dpy) + 1) > sizeof(addr->sun_path)) {
+		return 0;
+	}
+	memcpy(addr->sun_path + siz, dpy, dpysiz);
+	return sizeof(addr->sun_family) + siz + dpysiz;
+}
+
+int
+runpipe(int c) {
+	int retval = EXIT_FAILURE;
+	int s;
+	struct sockaddr_un addr = {AF_UNIX, SOCKPATH};
+	socklen_t len = set_dpy(&addr, getenv("DISPLAY"));
+	if(!len) {
+		fputs("chrwin: DISPLAY is not set properly\n", stderr);
+		return EXIT_FAILURE;
+	}
+	puts(addr.sun_path);
+
+	s = socket(addr.sun_family, SOCK_STREAM, 0);
+	if(s < 0) {
+		perror("chrwin: socket failed");
+		goto out_c;
+	}
+	if(connect(s, (struct sockaddr*)&addr, len) < 0) {
+		perror("chrwin: connect failed");
+		goto out_s;
+	}
+	if(xconn(c, s) < 0)
+		goto out_s;
+
 	socklen_t clen = 0;
 	socklen_t slen = 0;
-
-	clen = read(client.fd, &buf, sizeof(buf));
-	if(clen == 0)
-		goto out_server;
-	conn(clen);
-	clen -= write(server.fd, &buf, clen);
-	if(clen != 0)
-		goto out_server;
-	slen = read(server.fd, &buf, sizeof(buf));
-	if(slen == 0)
-		goto out_server;
-	setup(slen);
-
-	int nfds = MAX(client.fd, server.fd) + 1;
+	fd_set rfd;
+	int nfds = MAX(c, s) + 1;
 	for(;;) {
 		FD_ZERO(&rfd);
-		FD_ZERO(&wfd);
+		FD_SET(c, &rfd);
+		FD_SET(s, &rfd);
 
-		FD_SET(client.fd, &rfd);
-		FD_SET(server.fd, &rfd);
-	
-		FD_SET(client.fd, &wfd);
-		FD_SET(server.fd, &wfd);
-
-		if(select(nfds, &rfd, &wfd, NULL, NULL) < 0)
-			goto out_client;
-		if(FD_ISSET(client.fd, &rfd) && clen == 0) {
-			clen = read(client.fd, &buf, sizeof(buf));
+		if(pselect(nfds, &rfd, 0, 0, 0, 0) < 0) {
+			if(errno == EINTR) {
+				continue;
+			}
+			perror("chrwin: select failed");
+			goto out_s;
+		}
+		if(FD_ISSET(c, &rfd)) {
+			clen = read(c, &buf, sizeof(buf));
 			if(clen == 0)
 				break;
 			request(clen);
+
+			clen -= write(s, &buf, clen);
 		}
-		if(FD_ISSET(server.fd, &wfd) && clen > 0) {
-			clen -= write(server.fd, &buf, clen);
-		}
-		if(FD_ISSET(server.fd, &rfd) && slen == 0) {
-			slen = read(server.fd, &buf, sizeof(buf));
+		if(FD_ISSET(s, &rfd)) {
+			slen = read(s, &buf, sizeof(buf));
 			if(slen == 0)
 				break;
 			reply(slen);
-		}
-		if(FD_ISSET(client.fd, &wfd) && slen > 0) {
-			slen -= write(client.fd, &buf, slen);
+
+			slen -= write(c, &buf, slen);
 		}
 	}
 	
 	retval = EXIT_SUCCESS;
-out_server:
-	close(server.fd);
-out_client:
-	close(client.fd);
+out_s:
+	close(s);
+out_c:
+	close(c);
 	return retval;
+}
+
+int
+ctlconn(int fd, struct sockaddr_un *addr) {
+	//TODO: generate display number
+	socklen_t len = set_dpy(addr, fakedisplay);
+
+	puts(addr->sun_path);
+	if(bind(fd, (struct sockaddr*)addr, len) < 0) {
+		perror("chrwin: bind failed");
+		return -1;
+	}
+
+	if(listen(fd, 4) < 0) {
+		perror("chrwin: listen failed");
+		return -1;
+	}
+
+	if(sigaction(SIGCHLD, &(struct sigaction){
+	             .sa_handler = sigchld, .sa_flags = SA_NOCLDSTOP},
+		     NULL) < 0) {
+		perror("chrwin: sigaction failed");
+		return -1;
+	}
+
+	return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -366,60 +421,61 @@ int main(int argc, char *argv[]) {
 	UNUSED(argv);
 
 	int retval = EXIT_FAILURE;
-	socklen_t len;
 
-	len = sizeof(ctrl.addr.sun_family) + strlen(ctrl.addr.sun_path);
-	ctrl.fd = socket(ctrl.addr.sun_family, SOCK_STREAM, 0);
-	unlink(ctrl.addr.sun_path);
-	if(bind(ctrl.fd, (struct sockaddr*)&ctrl.addr, len) < 0) {
-		puts("bind failed");
-		goto out_ctrl;
+	if(argc < 2) {
+		fputs("chrwin: usage: chrwin PARENT_XID [cmd [args]]\n", stderr);
+		return EXIT_FAILURE;
+	}
+	parent_xid = strtol(argv[1], 0, 16);
+
+	struct sockaddr_un ctladdr = {AF_UNIX, SOCKPATH};
+	int ctl = socket(ctladdr.sun_family, SOCK_STREAM, 0);
+	if(ctl < 0) {
+		perror("chrwin: socket failed");
+		goto out;
+	}
+	if(ctlconn(ctl, &ctladdr) < 0)
+		goto out_ctl;
+
+	if(argc > 2) {
+		pid_t pid = fork();
+		if(pid == 0) {
+			argv += 2;
+			setenv("DISPLAY", fakedisplay, 1);
+			execvp(argv[0], argv);
+			perror("chrwin: execvp failed");
+		} else if(pid == -1) {
+			perror("chrwin: fork failed");
+		}
 	}
 
-	listen(ctrl.fd, 4);
-	puts("listen");
-
-	struct sigaction act = {
-		.sa_handler = sigchld,
-		.sa_flags = SA_NOCLDSTOP
-	};
-	sigaction(SIGCHLD, &act, NULL);
-
 	do {
-		len = sizeof(client.addr);
-		client.fd = accept(ctrl.fd, &client.addr, &len);
-		if(client.fd == -1)
+		int cfd = accept(ctl, NULL, NULL);
+		if(cfd == -1) {
+			perror("accept failed");
 			continue;
+		}
 		
 		pid_t pid = fork();
-		if(pid == -1) {
-			if(client.fd)
-				close(client.fd);
-		} else if(pid == 0) {
+		if(pid == 0) {
 			sigaction(SIGCHLD, NULL, NULL);
-			close(ctrl.fd);
-			puts("client connected");
-			retval = runpipe();
-			goto out;
+			close(ctl);
+			return runpipe(cfd);
 		} else {
-			children++;
+			close(cfd);
+			if(pid == -1) {
+				perror("fork failed");
+				continue;
+			} else
+				children++;
 		}
 	} while(children);
 
-	int status;
-	do {
-		status = wait(NULL);
-	} while(status > 0);
-	if(errno != ECHILD) {
-		puts("error during wait()");
-		goto out_ctrl;
-	}
-
-	retval = EXIT_SUCCESS;
-out_ctrl:
-	close(ctrl.fd);
+	retval = chldwait();
+out_ctl:
+	close(ctl);
+	unlink(ctladdr.sun_path);
 out:
-	puts("done");
 	return retval;
 }
 
